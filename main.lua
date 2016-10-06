@@ -70,7 +70,7 @@ roadsParameters = {
 -- return the population at a point
 function populationAt(x, y)
 	local freq = 4096
-	local n = math.pow(math.max(0, noise(x / freq + 2048, y / freq + 2048, 0)), 0.8) + 0.1
+	local n = math.pow(math.max(0, noise(x / freq + 2048, y / freq + 2048, 0)), 0.8)
 
 	return n
 end
@@ -249,8 +249,9 @@ function localConstraints(road)
 	end
 
 	-- don't extend segments outside area
+	local limit = 8192
 	local E = segment:endPoint()
-	if math.abs(E.x) > 4096 or math.abs(E.y) > 4096 then
+	if math.abs(E.x) > limit or math.abs(E.y) > limit then
 		road.attr.done = true
 	end
 
@@ -312,12 +313,12 @@ function globalGoals(queue, t, road)
 		local leftSplit = attr.leftSplit - roadsParameters.highwayLength
 		local rightSplit = attr.rightSplit - roadsParameters.highwayLength
 
-		if attr.leftSplit < 0 and love.math.random() < 0.1 then
+		if attr.leftSplit < 0 and love.math.random() < 0.1 and currentPop > 0.1 then
 			queue:push(Road(Segment(newPosition, dir:rotated(math.pi * 0.5), roadsParameters.highwayLength), {highway = true, leftSplit = split, rightSplit = split}), t + roadsParameters.highwayPriority)
 			leftSplit = split		
 		end
 
-		if attr.rightSplit < 0 and love.math.random() < 0.1 then
+		if attr.rightSplit < 0 and love.math.random() < 0.1 and currentPop > 0.1 then
 			queue:push(Road(Segment(newPosition, dir:rotated(math.pi * -0.5), roadsParameters.highwayLength), {highway = true, leftSplit = split, rightSplit = split}), t + roadsParameters.highwayPriority)
 			rightSplit = split
 		end
