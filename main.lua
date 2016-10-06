@@ -75,6 +75,7 @@ function populationAt(x, y)
 	return n
 end
 
+-- check intersection between 2 segments
 function intersectSegment(A, B)
 	local den = A.dir * B.dir
 
@@ -92,6 +93,9 @@ function intersectSegment(A, B)
 	return false, nil, nil
 end
 
+-- The local constraints function
+-- It prunes some segments (need work on that)
+-- And check for intersection with existing road segments
 function localConstraints(road)
 	local segment = road.segment
 
@@ -267,6 +271,7 @@ function populationInDirection(position, direction, length)
 	return sum
 end
 
+-- Find the best direction according to a position, and direction, and an angle range
 function bestDirection(position, direction, angleRange)
 	local bestAngle = -angleRange
 	local bestSum = 0
@@ -287,6 +292,8 @@ function bestDirection(position, direction, angleRange)
 	return bestAngle
 end
 
+-- The global goals function
+-- NEED WORK :)
 function globalGoals(queue, t, road)
 	local segment = road.segment
 	local attr = road.attr
@@ -337,6 +344,7 @@ function globalGoals(queue, t, road)
 	end
 end
 
+-- Just step the road generation algorithm
 function step()
 	if #queue > 0 and segments.length < roadsParameters.maxRoads then
 		local road, t = queue:pop()
@@ -353,7 +361,7 @@ end
 
 function love.load()
 	-- setup screen
-	love.window.setMode(1280, 720)
+	love.window.setMode(1280, 720, {resizable = true})
 
 	segments = list()
 	queue = PriorityQueue.new()
@@ -362,17 +370,10 @@ function love.load()
 	queue:push(Road(Segment(Vector(0, 0), Vector(1, 0):rotated(startAngle), roadsParameters.highwayLength), {highway = true, leftSplit = 500, rightSplit = 500}) , 0)
 	queue:push(Road(Segment(Vector(0, 0), Vector(-1, 0):rotated(startAngle), roadsParameters.highwayLength), {highway = true, leftSplit = 500, rightSplit = 500}) , 0)
 
+-- uncomment if you don't want live preview
 --[[
 	while #queue > 0 and segments.length < roadsParameters.maxRoads do
-		local road, t = queue:pop()
-		local accepted = localConstraints(road)
-
-		if accepted then
-			segments:push(road.segment)
-
-			-- add global goals
-			globalGoals(queue, t + 1, road)
-		end
+		step()
 	end
 	]]
 end
@@ -436,6 +437,7 @@ function love.draw()
 		end
 	end
 
+	-- draw road segments
 	love.graphics.push()
 	love.graphics.translate(cx, cy)
 	love.graphics.scale(zoom, zoom)
