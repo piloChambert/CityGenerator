@@ -6,7 +6,9 @@ require "list"
 
 local cameraX = 0
 local cameraY = 0
-local zoom = 1
+local zoom = 0.08
+local showPopulationMap = false
+local showDebugColor = false
 
 -- segments
 Segment = {}
@@ -52,23 +54,23 @@ roadsParameters = {
 	maxRoads = 1000000,
 
 	-- highway
-	highwayLength = 150,
-	highwayAngleRange = 0.01 * math.pi,
+	highwayLength = 100,
+	highwayAngleRange = 0.5 * math.pi,
 	highwayLookUpStepCount = 20,
 	highwayLookUpRayStepCount = 20,
 	highwayLookUpRayStepLength = 20000,
-	highwayConnectionDistance = 40, 
+	highwayConnectionDistance = 10, 
 	highwayPriority = 1,
 
 	-- streets
-	streetLength = 100,
+	streetLength = 50,
 	streetPriority = 200
 }
 
 -- return the population at a point
 function populationAt(x, y)
 	local freq = 4096
-	local n = math.pow(math.max(0, noise(x / freq + 2048, y / freq + 2048, 0)), 0.8)
+	local n = math.pow(math.max(0, noise(x / freq + 2048, y / freq + 2048, 0)), 0.8) + 0.1
 
 	return n
 end
@@ -94,10 +96,13 @@ function localConstraints(road)
 	local segment = road.segment
 
 	if road.attr.highway then
-		segment.width = 8.0
+		segment.width = 10.0
 		segment.color = {r = 255, g = 255, b = 255}
+		segment.debugColor = {r = 255, g = 255, b = 255}
 	else
+		segment.width = 5.0
 		segment.color = {r = 64, g = 64, b = 64}		
+		segment.debugColor = {r = 255, g = 255, b = 255}
 	end
 
 	-- PRUNNING
@@ -138,10 +143,12 @@ function localConstraints(road)
 
 		local s0 = Segment(closestSegment.pos, (I - closestSegment.pos):normalized(), (I - closestSegment.pos):length())
 		s0.color = closestSegment.color
+		s0.debugColor = {r = 0, g = 255, b = 0}
 		s0.width = closestSegment.width
 
 		local s1 = Segment(I, (E - I):normalized(), (E - I):length())
 		s1.color = closestSegment.color
+		s1.debugColor = {r = 0, g = 255, b = 0}
 		s1.width = closestSegment.width
 
 		-- remove splitte edge
@@ -152,7 +159,7 @@ function localConstraints(road)
 
 		-- correct this road segment
 		segment.length = closestIntersectionDistance
-		segment.color = {r = 0, g = 0, b = 255}
+		segment.debugColor = {r = 0, g = 0, b = 255}
 
 		-- doesn't expand the road
 		road.attr.done = true
@@ -181,7 +188,7 @@ function localConstraints(road)
 		local V = closestIntersection - segment.pos
 		segment.dir = V:normalized()
 		segment.length = V:length()
-		segment.color = {r = 255, g = 255, b = 0}
+		segment.debugColor = {r = 255, g = 255, b = 0}
 
 		-- doesn't expand the road
 		road.attr.done = true
@@ -212,11 +219,13 @@ function localConstraints(road)
 		local E = closestSegment:endPoint() -- end of splited segment
 
 		local s0 = Segment(closestSegment.pos, (I - closestSegment.pos):normalized(), (I - closestSegment.pos):length())
-		s0.color = {r = 0, g = 255, b = 255}
+		s0.debugColor = {r = 0, g = 255, b = 255}
+		s0.color = closestSegment.color
 		s0.width = closestSegment.width
 
 		local s1 = Segment(I, (E - I):normalized(), (E - I):length())
-		s1.color = {r = 0, g = 255, b = 255}
+		s1.debugColor = {r = 0, g = 255, b = 255}
+		s1.color = closestSegment.color
 		s1.width = closestSegment.width
 
 		-- remove splitte edge
@@ -227,7 +236,7 @@ function localConstraints(road)
 
 		-- correct this road segment
 		segment.length = closestIntersectionDistance
-		segment.color = {r = 255, g = 0, b = 255}
+		segment.debugColor = {r = 255, g = 0, b = 255}
 
 		-- doesn't expand the road
 		road.attr.done = true
@@ -237,11 +246,25 @@ function localConstraints(road)
 
 	-- don't extend segments outside area
 	local E = segment:endPoint()
-	if math.abs(E.x) > 8192 or math.abs(E.y) > 8192 then
+	if math.abs(E.x) > 4096 or math.abs(E.y) > 4096 then
 		road.attr.done = true
 	end
 
 	return true
+end
+
+-- this compute the weighted population over a segment
+function populationInDirection(position, direction, length)
+	local sum = 0
+
+	for s = 1, roadsParameters.highwayLookUpRayStepCount do
+		local dist = length * s / roadsParameters.highwayLookUpRayStepCount
+		local p = position + direction * dist
+		local pop = populationAt(p.x, p.y)
+		sum = sum + pop / dist
+	end
+
+	return sum
 end
 
 function bestDirection(position, direction, angleRange)
@@ -250,17 +273,9 @@ function bestDirection(position, direction, angleRange)
 	local angle = -angleRange
 
 	for i = 1, roadsParameters.highwayLookUpStepCount do 
-		local newDir = direction:rotated(angle)
-
 		-- sample population along the ray
-		local sum = 0
-		for s = 1, roadsParameters.highwayLookUpRayStepCount do
-			local dist = roadsParameters.highwayLookUpRayStepLength * s / roadsParameters.highwayLookUpRayStepCount
-			local p = position + newDir * dist
-			local pop = populationAt(p.x, p.y)
-			sum = sum + pop / dist
-		end
-
+		local newDir = direction:rotated(angle)
+		local sum = populationInDirection(position, newDir, roadsParameters.highwayLookUpRayStepLength)
 		if sum > bestSum then
 			bestSum = sum
 			bestAngle = angle
@@ -374,7 +389,7 @@ function love.update(dt)
 end
 
 function love.mousemoved(x, y, dx, dy, istouch)
-	if love.mouse.isDown("r") then
+	if love.mouse.isDown("l") then
 		cameraX = cameraX - dx / zoom
 		cameraY = cameraY - dy / zoom
 	end
@@ -385,6 +400,16 @@ function love.mousepressed( x, y, button, istouch )
 		zoom = zoom * 1.1
 	elseif button == "wd" then
 		zoom = zoom * 0.9	
+	end
+end
+
+function love.keypressed(key)
+	if key == "p" then
+		showPopulationMap = not showPopulationMap
+	end
+
+	if key == "c" then
+		showDebugColor = not showDebugColor
 	end
 end
 
@@ -399,11 +424,15 @@ function love.draw()
 	local w, h = love.window.getDimensions()
 	local cx = w * 0.5 - cameraX * zoom
 	local cy = h * 0.5 - cameraY * zoom
-	for y = 0, math.ceil(h / 16) do
-		for x = 0, math.ceil(w / 16) do
-			local n = populationAt((x * 16 - cx) / zoom, (y * 16 - cy) / zoom)
-			love.graphics.setColor(n * 255, n * 255 * 0.2, n * 255 * 0.2, 255)
-			love.graphics.rectangle("fill", x * 16 - 8, y * 16 - 8, 16, 16)
+
+	-- draw population map
+	if showPopulationMap then
+		for y = 0, math.ceil(h / 16) do
+			for x = 0, math.ceil(w / 16) do
+				local n = populationAt((x * 16 - cx) / zoom, (y * 16 - cy) / zoom)
+				love.graphics.setColor(n * 255, n * 255 * 0.2, n * 255 * 0.2, 255)
+				love.graphics.rectangle("fill", x * 16 - 8, y * 16 - 8, 16, 16)
+			end
 		end
 	end
 
@@ -411,15 +440,22 @@ function love.draw()
 	love.graphics.translate(cx, cy)
 	love.graphics.scale(zoom, zoom)
 	for seg in segments:iterate() do
-		love.graphics.setColor(seg.color.r, seg.color.g, seg.color.b, 255)
-		love.graphics.setLineWidth(seg.width)
+		if showDebugColor then
+			love.graphics.setColor(seg.debugColor.r, seg.debugColor.g, seg.debugColor.b, 255)
+		else
+			love.graphics.setColor(seg.color.r, seg.color.g, seg.color.b, 255)
+		end
+		love.graphics.setLineWidth(seg.width * zoom)
 		love.graphics.line(seg.pos.x, seg.pos.y, seg.pos.x + seg.dir.x * seg.length, seg.pos.y + seg.dir.y * seg.length)
 	end
 	
 	love.graphics.pop()
 
 	love.graphics.setColor(255, 255, 255, 255)
-	love.graphics.print("Segments: " .. segments.length, 10, 0)
-	love.graphics.print("Queue size: " .. #queue, 10, 15)
+	love.graphics.print("Segments: " .. segments.length, 10, 10)
+	love.graphics.print("Queue size: " .. #queue, 10, 25)
+
+	love.graphics.print("'p' to show population", 10, h-40)
+	love.graphics.print("'c' to toggle debug color ", 10, h-25)
 
 end
