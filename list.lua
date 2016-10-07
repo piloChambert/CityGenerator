@@ -112,7 +112,7 @@ local function iterate(self, current)
 	if not current then
 		current = self.first
 	elseif current then
-			current = current._next
+		current = current._next
 	end
 	return current
 end

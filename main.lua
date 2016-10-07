@@ -3,6 +3,8 @@ require "PriorityQueue"
 require "perlin"
 require "vector"
 require "list"
+require "aabb"
+require "QuadTree"
 
 local cameraX = 0
 local cameraY = 0
@@ -32,6 +34,16 @@ function Segment:endPoint()
 	return self.pos + self.dir * self.length
 end
 
+function Segment:aabb() 
+	local E = self:endPoint()
+	local minX = math.min(self.pos.x, E.x)
+	local maxX = math.max(self.pos.x, E.x)
+	local minY = math.min(self.pos.y, E.y)
+	local maxY = math.max(self.pos.y, E.y)
+
+	return AABB(minX, minY, maxX, maxY)
+end
+
 setmetatable(Segment, { __call = function(_, ...) return Segment.new(...) end })
 
 Road = {}
@@ -48,6 +60,7 @@ end
 
 setmetatable(Road, { __call = function(_, ...) return Road.new(...) end })
 
+mapSize = 8192
 
 -- configuration
 roadsParameters = {
@@ -70,7 +83,7 @@ roadsParameters = {
 -- return the population at a point
 function populationAt(x, y)
 	local freq = 4096
-	local n = math.pow(math.max(0, noise(x / freq + 2048, y / freq + 2048, 0)), 0.8)
+	local n = math.pow(math.max(0, noise(x / freq + 2048, y / freq + 2048, 0)), 0.8) + 0.1
 
 	return n
 end
@@ -109,9 +122,12 @@ function localConstraints(road)
 		segment.debugColor = {r = 255, g = 255, b = 255}
 	end
 
+	local listOfConcernSegments = {}
+	segments:query(segment:aabb():extend(roadsParameters.highwayConnectionDistance + 1), listOfConcernSegments)
+
 	-- PRUNNING
 	-- discard segment if there's one to close with the same orientation
-	for other in segments:iterate() do
+	for i, other in ipairs(listOfConcernSegments) do
 		if math.abs(other.dir:dot(segment.dir)) > 0.9 then
 			local d0 = math.max((segment.pos - other.pos):length(), (segment.pos - other:endPoint()):length())
 			local d1 = math.max((segment:endPoint() - other.pos):length(), (segment:endPoint() - other:endPoint()):length())			
@@ -127,7 +143,7 @@ function localConstraints(road)
 	-- itersection with other segment
 	local closestIntersectionDistance = road.segment.length
 	local closestSegment = nil
-	for other in segments:iterate() do
+	for  i, other in ipairs(listOfConcernSegments) do
 		local intersect, u, v = intersectSegment(segment, other)
 
 		-- intersection
@@ -176,7 +192,7 @@ function localConstraints(road)
 	local P = segment:endPoint() 
 	closestIntersectionDistance = roadsParameters.highwayConnectionDistance
 	local closestIntersection = nil
-	for other in segments:iterate() do
+	for i, other in ipairs(listOfConcernSegments) do
 		if (P - other.pos):length() < closestIntersectionDistance then
 			closestIntersectionDistance = (P - other.pos):length()
 			closestIntersection = other.pos
@@ -202,9 +218,9 @@ function localConstraints(road)
 
 	-- RULE 3
 	-- check distance to the closest segment
-	closestIntersectionDistance = 100--roadsParameters.highwayConnectionDistance
+	closestIntersectionDistance = roadsParameters.highwayConnectionDistance
 	closestSegment = nil
-	for other in segments:iterate() do
+	for i, other in ipairs(listOfConcernSegments) do
 		local intersect, u, v = intersectSegment(segment, other)
 
 		-- intersection
@@ -249,9 +265,8 @@ function localConstraints(road)
 	end
 
 	-- don't extend segments outside area
-	local limit = 8192
 	local E = segment:endPoint()
-	if math.abs(E.x) > limit or math.abs(E.y) > limit then
+	if math.abs(E.x) > mapSize or math.abs(E.y) > mapSize then
 		road.attr.done = true
 	end
 
@@ -309,7 +324,7 @@ function globalGoals(queue, t, road)
 
 	if attr.highway then
 		-- split?
-		local split = 1500
+		local split = 500
 		local leftSplit = attr.leftSplit - roadsParameters.highwayLength
 		local rightSplit = attr.rightSplit - roadsParameters.highwayLength
 
@@ -364,7 +379,7 @@ function love.load()
 	-- setup screen
 	love.window.setMode(1280, 720, {resizable = true})
 
-	segments = list()
+	segments = QuadTree(-mapSize, -mapSize, mapSize * 2, mapSize * 2, 128)
 	queue = PriorityQueue.new()
 
 	local startAngle = bestDirection(Vector(0, 0), Vector(1, 0), math.pi)
@@ -385,7 +400,7 @@ function love.update(dt)
 		love.event.quit()
 	end
 
-	for i = 1, 10 do
+	for i = 1, 100 do
 		step()
 	end
 end
@@ -420,6 +435,26 @@ function love.wheelmoved(x, y)
 	print(y)
 end
 
+function drawQuadTree(node)
+	-- draw child first
+	if node.children ~= nil then
+		drawQuadTree(node.children[0])
+		drawQuadTree(node.children[1])
+		drawQuadTree(node.children[2])
+		drawQuadTree(node.children[3])
+	end
+
+	for seg in node.list:iterate() do
+		if showDebugColor then
+			love.graphics.setColor(seg.debugColor.r, seg.debugColor.g, seg.debugColor.b, 255)
+		else
+			love.graphics.setColor(seg.color.r, seg.color.g, seg.color.b, 255)
+		end
+		love.graphics.setLineWidth(seg.width * zoom)
+		love.graphics.line(seg.pos.x, seg.pos.y, seg.pos.x + seg.dir.x * seg.length, seg.pos.y + seg.dir.y * seg.length)
+	end
+end
+
 function love.draw()
 	--drawMap()
 
@@ -442,16 +477,9 @@ function love.draw()
 	love.graphics.push()
 	love.graphics.translate(cx, cy)
 	love.graphics.scale(zoom, zoom)
-	for seg in segments:iterate() do
-		if showDebugColor then
-			love.graphics.setColor(seg.debugColor.r, seg.debugColor.g, seg.debugColor.b, 255)
-		else
-			love.graphics.setColor(seg.color.r, seg.color.g, seg.color.b, 255)
-		end
-		love.graphics.setLineWidth(seg.width * zoom)
-		love.graphics.line(seg.pos.x, seg.pos.y, seg.pos.x + seg.dir.x * seg.length, seg.pos.y + seg.dir.y * seg.length)
-	end
-	
+
+	drawQuadTree(segments)
+		
 	love.graphics.pop()
 
 	love.graphics.setColor(255, 255, 255, 255)

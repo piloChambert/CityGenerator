@@ -1,9 +1,7 @@
-- QUADTREE
-- QUADTREE
-- QUADTREE !!
+* QUADTREE
 - variable length road
 - image input for population map
 - new rules for highway
 - another layer of road? (Highway, main street, street)
-- A quadtree for storing segments can be a good idea...
+* A quadtree for storing segments can be a good idea...
 - Use a vornoi diagram for making different kind of region (residential, factory, etc)
