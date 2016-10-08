@@ -1,6 +1,6 @@
 * QUADTREE
 - variable length road
-- image input for population map
+* image input for population map
 - new rules for highway
 - another layer of road? (Highway, main street, street)
 * A quadtree for storing segments can be a good idea...
