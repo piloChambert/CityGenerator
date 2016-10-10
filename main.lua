@@ -54,8 +54,10 @@ Segment.__index = Segment
 function Segment.new(startNode, endNode)
 	local self = setmetatable({}, Segment)
 
-	self.startNode = startNode
-	self.endNode = endNode
+	self._startNode = startNode
+	self._startNode:addSegment(self)
+	self._endNode = endNode
+	self._endNode:addSegment(self)
 
 	self.width = 1
 	self.color = {r = 255, g = 255, b = 255}
@@ -64,26 +66,41 @@ function Segment.new(startNode, endNode)
 end
 
 function Segment:dir()
-	return (self.endNode.position - self.startNode.position):normalized()
+	return (self._endNode.position - self._startNode.position):normalized()
 end
 
 function Segment:length()
-	return (self.endNode.position - self.startNode.position):length()
+	return (self._endNode.position - self._startNode.position):length()
 end
 
 function Segment:startPoint()
-	return self.startNode.position
+	return self._startNode.position
 end
 
 function Segment:endPoint() 
-	return self.endNode.position
+	return self._endNode.position
 end
 
+function Segment:startNode()
+	return self._startNode
+end
+
+function Segment:endNode()
+	return self._endNode
+end
+
+function Segment:setEndNode(endNode)
+	self._endNode:removeSegment(self)
+	self._endNode = endNode
+	self._endNode:addSegment(self)
+end
+
+
 function Segment:aabb() 
-	local minX = math.min(self.startNode.position.x, self.endNode.position.x)
-	local maxX = math.max(self.startNode.position.x, self.endNode.position.x)
-	local minY = math.min(self.startNode.position.y, self.endNode.position.y)
-	local maxY = math.max(self.startNode.position.y, self.endNode.position.y)
+	local minX = math.min(self:startPoint().x, self:endPoint().x)
+	local maxX = math.max(self:startPoint().x, self:endPoint().x)
+	local minY = math.min(self:startPoint().y, self:endPoint().y)
+	local maxY = math.max(self:startPoint().y, self:endPoint().y)
 
 	return AABB(minX, minY, maxX, maxY)
 end
@@ -93,11 +110,12 @@ setmetatable(Segment, { __call = function(_, ...) return Segment.new(...) end })
 Road = {}
 Road.__index = Road
 
-function Road.new(seg, attr)
+function Road.new(seg, attr, goalsFunc)
 	local self = setmetatable({}, Road)
 
 	self.segment = seg
 	self.attr = attr
+	self.goalsFunc = goalsFunc
 
 	return self
 end
@@ -109,16 +127,17 @@ mapSize = 4096
 -- configuration
 roadsParameters = {
 	-- highway
-	highwayLength = 100,
+	highwayLength = 50,
 	highwayAngleRange = 0.5 * math.pi,
 	highwayLookUpStepCount = 20,
 	highwayLookUpRayStepCount = 20,
 	highwayLookUpRayStepLength = 2000,
 	highwayConnectionDistance = 20, 
 	highwayPriority = 1,
-	highwayBranchProbability = 0.05,
+	highwayBranchProbability = 0.02,
+	highwayChangeDirectionProbability = 0.05,
 
-	streetExtensionRatio = 0.8,
+	streetExtensionRatio = 0.2,
 
 	-- streets
 	streetLength = 50,
@@ -166,12 +185,13 @@ function intersectSegment(A, B)
 		return true, u, v
 	end
 
-	return false, nil, nil
+	return false, -1, -1
 end
 
 -- The local constraints function
 -- It prunes some segments (need work on that)
 -- And check for intersection with existing road segments
+listOfConcernSegments = {}
 function localConstraints(road)
 	local segment = road.segment
 
@@ -186,19 +206,31 @@ function localConstraints(road)
 		segment.debugColor = {r = 255, g = 255, b = 255}
 	end
 
-	local listOfConcernSegments = {}
-	quadTree:query(segment:aabb():extend(roadsParameters.highwayConnectionDistance), listOfConcernSegments)
+	for i,v in ipairs(listOfConcernSegments) do
+		v.selected = false
+	end
+
+	listOfConcernSegments = {}
+	local maxLength = segment:length() + math.max(segment:length() * roadsParameters.streetExtensionRatio, roadsParameters.highwayConnectionDistance)
+	local queryEndNode = Node(segment:startPoint() + segment:dir() * maxLength)
+	local querySegment = Segment(Node(segment:startPoint()), queryEndNode)
+	quadTree:query(querySegment:aabb(), listOfConcernSegments)
+
+	for i,v in ipairs(listOfConcernSegments) do
+		v.selected = true
+	end
 
 	-- RULE 1
 	-- itersection with other segment
 	local closestIntersectionDistance = road.segment:length()
 	local closestSegment = nil
+
 	for  i, other in ipairs(listOfConcernSegments) do
-		if getmetatable(other) == Segment and other.startNode ~= segment.startNode and other.endNode ~= segment.startNode then 
+		if getmetatable(other) == Segment and other:startNode() ~= segment:startNode() and other:endNode() ~= segment:startNode() then 
 			local intersect, u, v = intersectSegment(segment, other)
 
 			-- intersection
-			if intersect and u > 0.0001 and v > 0.0001 and u < segment:length() and v < other:length() then
+			if intersect and u > 0.0001 and v >= 0.0 and u <= segment:length() and v <= other:length() then
 				if u < closestIntersectionDistance then
 					closestIntersectionDistance = u
 					closestSegment = other
@@ -210,31 +242,28 @@ function localConstraints(road)
 	if closestSegment ~= nil then
 		-- create an itersection here
 		-- split road
-		local I = segment.startNode.position + segment:dir() * closestIntersectionDistance
+		local I = segment:startPoint() + segment:dir() * closestIntersectionDistance
 		local newNode = Node(I)
-		local endNode = closestSegment.endNode
+		local endNode = closestSegment:endNode()
 
-		local s0 = Segment(closestSegment.startNode, newNode)
-		s0.color = closestSegment.color
-		s0.debugColor = {r = 0, g = 255, b = 0}
-		s0.width = closestSegment.width
-
-		local s1 = Segment(newNode, endNode)
-		s1.color = closestSegment.color
-		s1.debugColor = {r = 0, g = 255, b = 0}
-		s1.width = closestSegment.width
-
-		-- remove splitte edge
-		quadTree:remove(closestSegment)
+		-- add new node
 		quadTree:push(newNode)
-		quadTree:push(s0)
-		quadTree:push(s1)
+
+		-- update splitted segment
+		closestSegment:setEndNode(newNode)
+
+		-- add new segment
+		local newSegment = Segment(newNode, endNode)
+		newSegment.color = closestSegment.color
+		newSegment.debugColor = {r = 0, g = 255, b = 0}
+		newSegment.width = closestSegment.width
+		quadTree:push(newSegment)
 
 		-- correct this road segment
 		segment.debugColor = {r = 0, g = 0, b = 255}
 
 		-- add the segment
-		segment.endNode = newNode
+		segment:setEndNode(newNode)
 		quadTree:push(segment)
 
 		-- doesn't expand the road
@@ -249,8 +278,8 @@ function localConstraints(road)
 	closestIntersectionDistance = roadsParameters.highwayConnectionDistance
 	local closestIntersection = nil
 	for i, other in ipairs(listOfConcernSegments) do
-		if getmetatable(other) == Node and other ~= segment.startNode then
-			local d = (other.position - segment.endNode.position):length()
+		if getmetatable(other) == Node and #other.segments > 2 and other ~= segment:startNode() then
+			local d = (other.position - segment:endPoint()):length()
 			if d < closestIntersectionDistance then
 				closestIntersectionDistance = d
 				closestIntersection = other
@@ -259,7 +288,7 @@ function localConstraints(road)
 	end
 
 	if closestIntersection ~= nil then
-		segment.endNode = closestIntersection
+		segment:setEndNode(closestIntersection)
 		segment.debugColor = {r = 255, g = 255, b = 0}
 
 		-- add it to the quadtree
@@ -273,10 +302,10 @@ function localConstraints(road)
 
 	-- RULE 3
 	-- check distance to the closest segment
-	closestIntersectionDistance = segment:length() * roadsParameters.streetExtensionRatio
+	closestIntersectionDistance = segment:length() * (1.0 + roadsParameters.streetExtensionRatio)
 	closestSegment = nil
 	for i, other in ipairs(listOfConcernSegments) do
-		if getmetatable(other) == Segment and other.startNode ~= segment.startNode and other.endNode ~= segment.startNode then
+		if getmetatable(other) == Segment and other:startNode() ~= segment:startNode() and other:endNode() ~= segment:startNode() then
 			local intersect, u, v = intersectSegment(segment, other)
 
 			-- intersection
@@ -292,25 +321,24 @@ function localConstraints(road)
 	if closestSegment ~= nil then
 		-- create an itersection here
 		-- split road
-		local I = segment.startNode.position + segment:dir() * closestIntersectionDistance
+		local I = segment:startPoint() + segment:dir() * closestIntersectionDistance
 		local newNode = Node(I)
-		local endNode = closestSegment.endNode
+		local endNode = closestSegment:endNode()
 
-		local s0 = Segment(closestSegment.startNode, newNode)
-		s0.debugColor = {r = 0, g = 255, b = 255}
-		s0.color = closestSegment.color
-		s0.width = closestSegment.width
-
-		local s1 = Segment(newNode, endNode)
-		s1.debugColor = {r = 0, g = 255, b = 255}
-		s1.color = closestSegment.color
-		s1.width = closestSegment.width
-
-		-- remove splitte edge
-		quadTree:remove(closestSegment)
+		-- add new node
 		quadTree:push(newNode)
-		quadTree:push(s0)
-		quadTree:push(s1)
+
+		-- update splitted segment
+		closestSegment:setEndNode(newNode)
+
+		-- add new segment
+		local newSegment = Segment(newNode, endNode)
+		newSegment.color = closestSegment.color
+		newSegment.debugColor = {r = 0, g = 255, b = 0}
+		newSegment.width = closestSegment.width
+		quadTree:push(newSegment)
+
+		segment:setEndNode(newNode)
 
 		-- add the segment
 		quadTree:push(segment)
@@ -325,13 +353,13 @@ function localConstraints(road)
 	end
 
 	-- don't extend segments outside area
-	local E = segment.endNode.position
+	local E = segment:endPoint()
 	if math.abs(E.x) > mapSize or math.abs(E.y) > mapSize then
 		road.attr.done = true
 	end
 
 	-- add the segment
-	quadTree:push(segment.endNode)
+	quadTree:push(segment:endNode())
 	quadTree:push(segment)
 
 
@@ -373,15 +401,54 @@ function bestDirection(position, direction, length, angleRange)
 	return bestAngle
 end
 
--- The global goals function
--- NEED WORK :)
-function globalGoals(queue, t, road)
+function globalGoalsHighway(t, road)
 	local segment = road.segment
 	local attr = road.attr
 	local startPosition = segment:endPoint()
 	local dir = segment:dir()
 	local currentPop = populationAt(startPosition.x, startPosition.y)
-	local startNode = segment.endNode
+	local startNode = segment:endNode()
+
+	-- don't expand the road :)
+	if attr.done then
+		return
+	end
+
+	-- change direction
+	if math.random() < roadsParameters.highwayChangeDirectionProbability then
+		-- choose best direction
+		local bestAngle = bestDirection(startPosition, dir, 8000, math.pi * 0.25)
+		local newEnd = Vector(startPosition + dir:rotated(bestAngle) * roadsParameters.highwayLength)
+		queue:push(Road(Segment(startNode, Node(newEnd)), {highway = true}, globalGoalsHighway), t)
+
+	else
+		-- go straight
+		local newEnd = Vector(startPosition + dir * roadsParameters.highwayLength)
+		queue:push(Road(Segment(startNode, Node(newEnd)), {highway = true}, globalGoalsHighway), t)
+	end
+
+	-- branch?
+	if math.random() < roadsParameters.highwayBranchProbability then
+		local newEnd = Vector(startPosition + dir:rotated(math.pi * 0.5) * roadsParameters.highwayLength)
+		queue:push(Road(Segment(startNode, Node(newEnd)), {highway = true}, globalGoalsHighway), t + 1)	
+	end
+
+	if math.random() < roadsParameters.highwayBranchProbability then
+		local newEnd = Vector(startPosition + dir:rotated(math.pi * -0.5) * roadsParameters.highwayLength)
+		queue:push(Road(Segment(startNode, Node(newEnd)), {highway = true}, globalGoalsHighway), t + 1)	
+	end
+
+end
+
+-- The global goals function
+-- NEED WORK :)
+function globalGoals(t, road)
+	local segment = road.segment
+	local attr = road.attr
+	local startPosition = segment:endPoint()
+	local dir = segment:dir()
+	local currentPop = populationAt(startPosition.x, startPosition.y)
+	local startNode = segment:endNode()
 
 	-- don't expand the road :)
 	if attr.done then
@@ -439,7 +506,7 @@ function step()
 
 		if accepted then
 			-- add global goals
-			globalGoals(queue, t + 1, road)
+			road.goalsFunc(t + 1, road)
 		end
 	end
 end
@@ -448,7 +515,7 @@ function love.load()
 	-- setup screen
 	love.window.setMode(1280, 720, {resizable = true})
 
-	quadTree = QuadTree(-mapSize, -mapSize, mapSize * 2, mapSize * 2, 128)
+	quadTree = QuadTree(-mapSize, -mapSize, mapSize * 2, mapSize * 2, 1024)
 	queue = PriorityQueue.new()
 
 	-- create first node
@@ -461,8 +528,12 @@ function love.load()
 	local endNode1 = Node(startNode.position + Vector(-1, 0):rotated(startAngle) * roadsParameters.highwayLength)
 
 	-- push possible segments
-	queue:push(Road(Segment(startNode, endNode0), {highway = true}) , 0)
-	queue:push(Road(Segment(startNode, endNode1), {highway = true}) , 0)
+	queue:push(Road(Segment(startNode, endNode0), {highway = true}, globalGoalsHighway) , 0)
+	queue:push(Road(Segment(startNode, endNode1), {highway = true}, globalGoalsHighway) , 0)
+
+	while quadTree.length < 0 do
+		step()
+	end
 end
 
 function love.update(dt)
@@ -519,16 +590,31 @@ function drawQuadTree(node)
 		drawQuadTree(node.children[3])
 	end
 
-	for seg in node.list:iterate() do
-		if getmetatable(seg) == Segment then
+	for obj in node.list:iterate() do
+		if getmetatable(obj) == Segment then
 			if showDebugColor then
-				love.graphics.setColor(seg.debugColor.r, seg.debugColor.g, seg.debugColor.b, 255)
+				love.graphics.setColor(obj.debugColor.r, obj.debugColor.g, obj.debugColor.b, 255)
 			else
-				love.graphics.setColor(seg.color.r, seg.color.g, seg.color.b, 255)
+				if obj.selected then
+					love.graphics.setColor(255, 0, 0, 255)
+				else
+					love.graphics.setColor(obj.color.r, obj.color.g, obj.color.b, 255)
+				end
 			end
-			love.graphics.setLineWidth(seg.width * zoom)
-			love.graphics.line(seg.startNode.position.x, seg.startNode.position.y, seg.endNode.position.x, seg.endNode.position.y)
+			love.graphics.setLineWidth(obj.width)
+			love.graphics.line(obj:startPoint().x, obj:startPoint().y, obj:endPoint().x, obj:endPoint().y)
+		elseif getmetatable(obj) == Node then
+			if #obj.segments > 2 then
+				love.graphics.setColor(255, 0, 0, 255)
+				love.graphics.circle("fill", obj.position.x, obj.position.y, 8, 8)
+			else
+				love.graphics.setColor(255, 255, 255, 255)
+				love.graphics.circle("fill", obj.position.x, obj.position.y, 4, 8)
+			end
+
 		end
+
+
 	end
 end
 
