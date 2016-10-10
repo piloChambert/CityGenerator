@@ -153,7 +153,7 @@ roadsParameters = {
 	highwayConnectionDistance = 20, 
 	highwayPriority = 1,
 	highwayBranchProbability = 0.02,
-	highwayChangeDirectionProbability = 0.05,
+	highwayChangeDirectionProbability = 0.5,
 
 	streetExtensionRatio = 0.2,
 
@@ -209,7 +209,6 @@ end
 -- The local constraints function
 -- It prunes some segments (need work on that)
 -- And check for intersection with existing road segments
-listOfConcernSegments = {}
 function localConstraints(road)
 	local segment = road.segment
 
@@ -224,19 +223,11 @@ function localConstraints(road)
 		segment.debugColor = {r = 255, g = 255, b = 255}
 	end
 
-	for i,v in ipairs(listOfConcernSegments) do
-		v.selected = false
-	end
-
-	listOfConcernSegments = {}
+	local listOfConcernSegments = {}
 	local maxLength = segment:length() + math.max(segment:length() * roadsParameters.streetExtensionRatio, roadsParameters.highwayConnectionDistance)
 	local queryEndNode = Node(segment:startPoint() + segment:dir() * maxLength)
 	local querySegment = Segment(Node(segment:startPoint()), queryEndNode)
 	quadTree:query(querySegment:aabb(), listOfConcernSegments)
-
-	for i,v in ipairs(listOfConcernSegments) do
-		v.selected = true
-	end
 
 	-- RULE 1
 	-- itersection with other segment
@@ -440,7 +431,7 @@ function globalGoalsHighway(t, road)
 	-- change direction
 	if math.random() < roadsParameters.highwayChangeDirectionProbability then
 		-- choose best direction
-		local bestAngle = bestDirection(startPosition, dir, 8000, math.pi * 0.25)
+		local bestAngle = bestDirection(startPosition, dir, 8000, math.pi * 0.01)
 		local newEnd = Vector(startPosition + dir:rotated(bestAngle) * roadsParameters.highwayLength)
 		queue:push(Road(Segment(startNode, Node(newEnd)), {highway = true}, globalGoalsHighway), t)
 
@@ -532,7 +523,7 @@ function optimizeGraph()
 				local s0 = obj.segments[1]
 				local s1 = obj.segments[2]
 
-				if math.abs(s0:dir():dot(s1:dir())) > 0.99 then
+				if math.abs(s0:dir():dot(s1:dir())) > 0.999999 then
 					local n0 = s0:startNode()
 					if n0 == obj then
 						n0 = s0:endNode()
@@ -557,6 +548,9 @@ function optimizeGraph()
 
 					assert(n0 ~= n1)
 					local s = Segment(n0, n1)
+					s.width = s0.width 
+					s.color = s0.color
+					s.debugColor = s0.debugColor
 					quadTree:push(s)
 				end
 			end
@@ -597,7 +591,7 @@ function love.load()
 	queue:push(Road(Segment(startNode, endNode0), {highway = true}, globalGoalsHighway) , 0)
 	queue:push(Road(Segment(startNode, endNode1), {highway = true}, globalGoalsHighway) , 0)
 
-	while quadTree.length < 2541 do
+	while quadTree.length < 0 do
 		step()
 	end
 end
@@ -669,13 +663,9 @@ function drawQuadTree(node)
 			if showDebugColor then
 				love.graphics.setColor(obj.debugColor.r, obj.debugColor.g, obj.debugColor.b, 255)
 			else
-				if obj.selected then
-					love.graphics.setColor(255, 0, 0, 255)
-				else
-					love.graphics.setColor(obj.color.r, obj.color.g, obj.color.b, 255)
-				end
+				love.graphics.setColor(obj.color.r, obj.color.g, obj.color.b, 255)
 			end
-			--love.graphics.setLineWidth(obj.width)
+			love.graphics.setLineWidth(obj.width)
 			love.graphics.line(obj:startPoint().x, obj:startPoint().y, obj:endPoint().x, obj:endPoint().y)
 		elseif getmetatable(obj) == Node then
 			if #obj.segments > 2 then
