@@ -61,6 +61,7 @@ function Segment.new(startNode, endNode)
 
 	self.width = 1
 	self.color = {r = 255, g = 255, b = 255}
+	self.debugColor = {r = 255, g = 255, b = 255}
 
 	return self
 end
@@ -90,11 +91,28 @@ function Segment:endNode()
 end
 
 function Segment:setEndNode(endNode)
-	self._endNode:removeSegment(self)
+	if self._endNode then
+		self._endNode:removeSegment(self)
+	end
+
 	self._endNode = endNode
-	self._endNode:addSegment(self)
+
+	if self._endNode then
+		self._endNode:addSegment(self)
+	end
 end
 
+function Segment:setStartNode(startNode)
+	if self._startNode then
+		self._startNode:removeSegment(self)
+	end
+
+	self._startNode = startNode
+
+	if self._startNode then
+		self._startNode:addSegment(self)
+	end
+end
 
 function Segment:aabb() 
 	local minX = math.min(self:startPoint().x, self:endPoint().x)
@@ -197,11 +215,11 @@ function localConstraints(road)
 
 	-- rendering parameter
 	if road.attr.highway then
-		segment.width = 10.0
+		segment.width = 16.0
 		segment.color = {r = 255, g = 255, b = 255}
 		segment.debugColor = {r = 255, g = 255, b = 255}
 	else
-		segment.width = 5.0
+		segment.width = 8.0
 		segment.color = {r = 64, g = 64, b = 64}		
 		segment.debugColor = {r = 255, g = 255, b = 255}
 	end
@@ -228,9 +246,8 @@ function localConstraints(road)
 	for  i, other in ipairs(listOfConcernSegments) do
 		if getmetatable(other) == Segment and other:startNode() ~= segment:startNode() and other:endNode() ~= segment:startNode() then 
 			local intersect, u, v = intersectSegment(segment, other)
-
 			-- intersection
-			if intersect and u > 0.0001 and v >= 0.0 and u <= segment:length() and v <= other:length() then
+			if intersect and u >= 0.0 and v >= 0.0 and u <= segment:length() and v <= other:length() then
 				if u < closestIntersectionDistance then
 					closestIntersectionDistance = u
 					closestSegment = other
@@ -250,7 +267,9 @@ function localConstraints(road)
 		quadTree:push(newNode)
 
 		-- update splitted segment
+		quadTree:remove(closestSegment) -- we have to do it!
 		closestSegment:setEndNode(newNode)
+		quadTree:push(closestSegment) -- the aabb have changed!
 
 		-- add new segment
 		local newSegment = Segment(newNode, endNode)
@@ -278,11 +297,13 @@ function localConstraints(road)
 	closestIntersectionDistance = roadsParameters.highwayConnectionDistance
 	local closestIntersection = nil
 	for i, other in ipairs(listOfConcernSegments) do
-		if getmetatable(other) == Node and #other.segments > 2 and other ~= segment:startNode() then
-			local d = (other.position - segment:endPoint()):length()
-			if d < closestIntersectionDistance then
-				closestIntersectionDistance = d
-				closestIntersection = other
+		if getmetatable(other) == Node then
+			if (#other.segments > 2 or (other.position - P):length() < 1.0) and other ~= segment:startNode() then
+				local dist = (other.position - segment:endPoint()):length()
+				if dist < closestIntersectionDistance then
+					closestIntersectionDistance = dist
+					closestIntersection = other
+				end
 			end
 		end
 	end
@@ -329,7 +350,9 @@ function localConstraints(road)
 		quadTree:push(newNode)
 
 		-- update splitted segment
+		quadTree:remove(closestSegment) -- we have to do it!
 		closestSegment:setEndNode(newNode)
+		quadTree:push(closestSegment) -- the aabb have changed!
 
 		-- add new segment
 		local newSegment = Segment(newNode, endNode)
@@ -498,6 +521,49 @@ function globalGoals(t, road)
 	end
 end
 
+function optimizeGraph()
+	nodes = {}
+	quadTree:query(AABB(-mapSize * 2, -mapSize * 2, mapSize * 4, mapSize * 4), nodes)
+
+	for i, obj in ipairs(nodes) do
+		if getmetatable(obj) == Node then
+
+			if #obj.segments == 2 then
+				local s0 = obj.segments[1]
+				local s1 = obj.segments[2]
+
+				if math.abs(s0:dir():dot(s1:dir())) > 0.99 then
+					local n0 = s0:startNode()
+					if n0 == obj then
+						n0 = s0:endNode()
+					end
+
+					local n1 = s1:startNode()
+					if n1 == obj then
+						n1 = s1:endNode()
+					end
+
+					quadTree:remove(s0)
+					quadTree:remove(s1)
+					quadTree:remove(obj)
+
+					s0.marked = true
+					s1.marked = true
+
+					s0:setStartNode(nil)
+					s0:setEndNode(nil)
+					s1:setStartNode(nil)
+					s1:setEndNode(nil)
+
+					assert(n0 ~= n1)
+					local s = Segment(n0, n1)
+					quadTree:push(s)
+				end
+			end
+		end
+	end
+end
+
 -- Just step the road generation algorithm
 function step()
 	if #queue > 0 then
@@ -515,7 +581,7 @@ function love.load()
 	-- setup screen
 	love.window.setMode(1280, 720, {resizable = true})
 
-	quadTree = QuadTree(-mapSize, -mapSize, mapSize * 2, mapSize * 2, 1024)
+	quadTree = QuadTree(-mapSize, -mapSize, mapSize * 2, mapSize * 2, 128)
 	queue = PriorityQueue.new()
 
 	-- create first node
@@ -531,7 +597,7 @@ function love.load()
 	queue:push(Road(Segment(startNode, endNode0), {highway = true}, globalGoalsHighway) , 0)
 	queue:push(Road(Segment(startNode, endNode1), {highway = true}, globalGoalsHighway) , 0)
 
-	while quadTree.length < 0 do
+	while quadTree.length < 2541 do
 		step()
 	end
 end
@@ -542,9 +608,17 @@ function love.update(dt)
 		love.event.quit()
 	end
 
+	local finished = #queue == 0
+
 	for i = 1, 100 do
 		step()
 	end
+
+	if not finished and #queue == 0 then
+		-- optimise the graph (ie removed nodes)
+		optimizeGraph()
+	end
+
 end
 
 function love.mousemoved(x, y, dx, dy, istouch)
@@ -601,15 +675,15 @@ function drawQuadTree(node)
 					love.graphics.setColor(obj.color.r, obj.color.g, obj.color.b, 255)
 				end
 			end
-			love.graphics.setLineWidth(obj.width)
+			--love.graphics.setLineWidth(obj.width)
 			love.graphics.line(obj:startPoint().x, obj:startPoint().y, obj:endPoint().x, obj:endPoint().y)
 		elseif getmetatable(obj) == Node then
 			if #obj.segments > 2 then
 				love.graphics.setColor(255, 0, 0, 255)
-				love.graphics.circle("fill", obj.position.x, obj.position.y, 8, 8)
+				love.graphics.circle("fill", obj.position.x, obj.position.y, 10, 8)
 			else
 				love.graphics.setColor(255, 255, 255, 255)
-				love.graphics.circle("fill", obj.position.x, obj.position.y, 4, 8)
+				love.graphics.circle("fill", obj.position.x, obj.position.y, 10, 8)
 			end
 
 		end
