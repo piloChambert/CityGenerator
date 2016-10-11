@@ -51,13 +51,14 @@ setmetatable(Node, { __call = function(_, ...) return Node.new(...) end })
 Segment = {}
 Segment.__index = Segment
 
-function Segment.new(startNode, endNode)
+function Segment.new(startNode, endNode, attr)
 	local self = setmetatable({}, Segment)
 
 	self._startNode = startNode
 	self._startNode:addSegment(self)
 	self._endNode = endNode
 	self._endNode:addSegment(self)
+	self.attr = attr
 
 	self.width = 1
 	self.color = {r = 255, g = 255, b = 255}
@@ -125,14 +126,57 @@ end
 
 setmetatable(Segment, { __call = function(_, ...) return Segment.new(...) end })
 
+SegmentStub = {
+	dir = Segment.dir,
+	length = Segment.length,
+	startPoint = Segment.startPoint,
+	endPoint = Segment.endPoint,
+	startNode = Segment.startNode,
+	endNode = Segment.endNode,
+	aabb = Segment.aabb
+}
+SegmentStub.__index = SegmentStub
+
+function SegmentStub.new(startNode, endNode, attr)
+	local self = setmetatable({}, SegmentStub)
+
+	self._startNode = startNode
+	self._endNode = endNode
+
+	self.width = 1
+	self.color = {r = 255, g = 255, b = 255}
+	self.debugColor = {r = 255, g = 255, b = 255}
+	self.attr = attr
+
+	return self
+end
+
+function SegmentStub:setEndNode(endNode)
+	self._endNode = endNode
+end
+
+function SegmentStub:setStartNode(startNode)
+	self._startNode = startNode
+end 
+
+function SegmentStub:toSegment()
+	local new = Segment(self._startNode, self._endNode, self.attr)
+	new.color = self.color
+	new.debugColor = self.debugColor
+	new.width = self.width
+
+	return new
+end
+
+setmetatable(SegmentStub, { __call = function(_, ...) return SegmentStub.new(...) end })
+
 Road = {}
 Road.__index = Road
 
-function Road.new(seg, attr, goalsFunc)
+function Road.new(seg, goalsFunc)
 	local self = setmetatable({}, Road)
 
 	self.segment = seg
-	self.attr = attr
 	self.goalsFunc = goalsFunc
 
 	return self
@@ -150,17 +194,17 @@ roadsParameters = {
 	highwayLookUpStepCount = 20,
 	highwayLookUpRayStepCount = 20,
 	highwayLookUpRayStepLength = 2000,
-	highwayConnectionDistance = 20, 
+	highwayConnectionRatio = 0.5,
 	highwayPriority = 1,
-	highwayBranchProbability = 0.02,
-	highwayChangeDirectionProbability = 0.5,
+	highwayBranchProbability = 0.013,
+	highwayChangeDirectionProbability = 0.2,
 
 	streetExtensionRatio = 0.2,
 
 	-- streets
-	streetLength = 50,
+	streetLength = 80,
 	streetPriority = 200,
-	streetBranchProbability = 0.08
+	streetBranchProbability = 0.11
 }
 
 -- return the population at a point
@@ -192,7 +236,7 @@ function intersectSegment(A, B)
 	local Bdir = B:dir()
 	local den = Adir * Bdir
 
-	if math.abs(den) > 0.0 then
+	if math.abs(den) > 0.00000001 then
 		-- I = A.pos + A.dir * u = B.pos + B.dir * v
 		local diff = B:startPoint() - A:startPoint()
 
@@ -213,7 +257,7 @@ function localConstraints(road)
 	local segment = road.segment
 
 	-- rendering parameter
-	if road.attr.highway then
+	if segment.attr.highway then
 		segment.width = 16.0
 		segment.color = {r = 255, g = 255, b = 255}
 		segment.debugColor = {r = 255, g = 255, b = 255}
@@ -224,9 +268,9 @@ function localConstraints(road)
 	end
 
 	local listOfConcernSegments = {}
-	local maxLength = segment:length() + math.max(segment:length() * roadsParameters.streetExtensionRatio, roadsParameters.highwayConnectionDistance)
+	local maxLength = segment:length() * (1.0 + math.max(roadsParameters.streetExtensionRatio, roadsParameters.highwayConnectionRatio))
 	local queryEndNode = Node(segment:startPoint() + segment:dir() * maxLength)
-	local querySegment = Segment(Node(segment:startPoint()), queryEndNode)
+	local querySegment = SegmentStub(Node(segment:startPoint()), queryEndNode)
 	quadTree:query(querySegment:aabb(), listOfConcernSegments)
 
 	-- RULE 1
@@ -237,6 +281,7 @@ function localConstraints(road)
 	for  i, other in ipairs(listOfConcernSegments) do
 		if getmetatable(other) == Segment and other:startNode() ~= segment:startNode() and other:endNode() ~= segment:startNode() then 
 			local intersect, u, v = intersectSegment(segment, other)
+
 			-- intersection
 			if intersect and u >= 0.0 and v >= 0.0 and u <= segment:length() and v <= other:length() then
 				if u < closestIntersectionDistance then
@@ -263,7 +308,7 @@ function localConstraints(road)
 		quadTree:push(closestSegment) -- the aabb have changed!
 
 		-- add new segment
-		local newSegment = Segment(newNode, endNode)
+		local newSegment = Segment(newNode, endNode, closestSegment.attr)
 		newSegment.color = closestSegment.color
 		newSegment.debugColor = {r = 0, g = 255, b = 0}
 		newSegment.width = closestSegment.width
@@ -274,10 +319,10 @@ function localConstraints(road)
 
 		-- add the segment
 		segment:setEndNode(newNode)
-		quadTree:push(segment)
+		quadTree:push(segment:toSegment())
 
 		-- doesn't expand the road
-		road.attr.done = true
+		segment.attr.done = true
 
 		return true
 	end
@@ -285,7 +330,7 @@ function localConstraints(road)
 	-- RULE 2 
 	-- else check closest existing intersection
 	local P = segment:endPoint() 
-	closestIntersectionDistance = roadsParameters.highwayConnectionDistance
+	closestIntersectionDistance = segment:length() * roadsParameters.highwayConnectionRatio
 	local closestIntersection = nil
 	for i, other in ipairs(listOfConcernSegments) do
 		if getmetatable(other) == Node then
@@ -304,10 +349,10 @@ function localConstraints(road)
 		segment.debugColor = {r = 255, g = 255, b = 0}
 
 		-- add it to the quadtree
-		quadTree:push(segment)
+		quadTree:push(segment:toSegment())
 
 		-- doesn't expand the road
-		road.attr.done = true
+		segment.attr.done = true
 
 		return true
 	end
@@ -346,7 +391,7 @@ function localConstraints(road)
 		quadTree:push(closestSegment) -- the aabb have changed!
 
 		-- add new segment
-		local newSegment = Segment(newNode, endNode)
+		local newSegment = Segment(newNode, endNode, closestSegment.attr)
 		newSegment.color = closestSegment.color
 		newSegment.debugColor = {r = 0, g = 255, b = 0}
 		newSegment.width = closestSegment.width
@@ -355,13 +400,13 @@ function localConstraints(road)
 		segment:setEndNode(newNode)
 
 		-- add the segment
-		quadTree:push(segment)
+		quadTree:push(segment:toSegment())
 
 		-- correct this road segment
 		segment.debugColor = {r = 255, g = 0, b = 255}
 
 		-- doesn't expand the road
-		road.attr.done = true
+		segment.attr.done = true
 
 		return true
 	end
@@ -369,12 +414,12 @@ function localConstraints(road)
 	-- don't extend segments outside area
 	local E = segment:endPoint()
 	if math.abs(E.x) > mapSize or math.abs(E.y) > mapSize then
-		road.attr.done = true
+		segment.attr.done = true
 	end
 
 	-- add the segment
 	quadTree:push(segment:endNode())
-	quadTree:push(segment)
+	quadTree:push(segment:toSegment())
 
 
 	return true
@@ -417,14 +462,13 @@ end
 
 function globalGoalsHighway(t, road)
 	local segment = road.segment
-	local attr = road.attr
 	local startPosition = segment:endPoint()
 	local dir = segment:dir()
 	local currentPop = populationAt(startPosition.x, startPosition.y)
 	local startNode = segment:endNode()
 
 	-- don't expand the road :)
-	if attr.done then
+	if segment.attr.done then
 		return
 	end
 
@@ -433,23 +477,76 @@ function globalGoalsHighway(t, road)
 		-- choose best direction
 		local bestAngle = bestDirection(startPosition, dir, 8000, math.pi * 0.01)
 		local newEnd = Vector(startPosition + dir:rotated(bestAngle) * roadsParameters.highwayLength)
-		queue:push(Road(Segment(startNode, Node(newEnd)), {highway = true}, globalGoalsHighway), t)
+		queue:push(Road(SegmentStub(startNode, Node(newEnd), {highway = true}), globalGoalsHighway), t)
 
 	else
 		-- go straight
 		local newEnd = Vector(startPosition + dir * roadsParameters.highwayLength)
-		queue:push(Road(Segment(startNode, Node(newEnd)), {highway = true}, globalGoalsHighway), t)
+		queue:push(Road(SegmentStub(startNode, Node(newEnd), {highway = true}), globalGoalsHighway), t)
 	end
 
 	-- branch?
+	local branchRight = false
+	local branchLeft = true
 	if math.random() < roadsParameters.highwayBranchProbability then
-		local newEnd = Vector(startPosition + dir:rotated(math.pi * 0.5) * roadsParameters.highwayLength)
-		queue:push(Road(Segment(startNode, Node(newEnd)), {highway = true}, globalGoalsHighway), t + 1)	
+		local r = math.random()
+		branchRight = r < 0.6666666
+		branchLeft = r > 0.3333333
+
+		if branchRight then
+			local newEnd = Vector(startPosition + dir:rotated(math.pi * 0.5) * roadsParameters.highwayLength)
+			queue:push(Road(SegmentStub(startNode, Node(newEnd), {highway = true}), globalGoalsHighway), t + 1)	
+		end
+
+		if branchLeft then
+			local newEnd = Vector(startPosition + dir:rotated(math.pi * -0.5) * roadsParameters.highwayLength)
+			queue:push(Road(SegmentStub(startNode, Node(newEnd), {highway = true}), globalGoalsHighway), t + 1)	
+		end
 	end
 
-	if math.random() < roadsParameters.highwayBranchProbability then
-		local newEnd = Vector(startPosition + dir:rotated(math.pi * -0.5) * roadsParameters.highwayLength)
-		queue:push(Road(Segment(startNode, Node(newEnd)), {highway = true}, globalGoalsHighway), t + 1)	
+	if math.random() < roadsParameters.streetBranchProbability then
+		local r = math.random()
+		branchRight = r < 0.6666666 and not branchRight
+		branchLeft = r > 0.3333333 and not branchLeft
+
+		if branchRight then	
+			local newEnd = Vector(startPosition + dir:rotated(math.pi * 0.5) * roadsParameters.streetLength)
+			queue:push(Road(SegmentStub(startNode, Node(newEnd), {}), globalGoalsStreet), t + 150)	
+		end
+
+		if branchLeft then
+			local newEnd = Vector(startPosition + dir:rotated(math.pi * -0.5) * roadsParameters.streetLength)
+			queue:push(Road(SegmentStub(startNode, Node(newEnd), {}), globalGoalsStreet), t + 150)	
+		end
+	end
+end
+
+function globalGoalsStreet(t, road)
+	local segment = road.segment
+	local startPosition = segment:endPoint()
+	local dir = segment:dir()
+	local currentPop = populationAt(startPosition.x, startPosition.y)
+	local startNode = segment:endNode()
+
+	-- don't expand the road :)
+	if segment.attr.done then
+		return
+	end
+
+	if currentPop > 0.1 then
+		-- keep moving straight
+		local newEnd = Vector(startPosition + dir * roadsParameters.streetLength)
+		queue:push(Road(SegmentStub(startNode, Node(newEnd), {}), globalGoalsStreet), t + 1)	
+
+		if math.random() < roadsParameters.streetBranchProbability then
+			local newEnd = Vector(startPosition + dir:rotated(math.pi * 0.5) * roadsParameters.streetLength)
+			queue:push(Road(SegmentStub(startNode, Node(newEnd), {}), globalGoalsStreet), t + 5)	
+		end
+
+		if math.random() < roadsParameters.streetBranchProbability then
+			local newEnd = Vector(startPosition + dir:rotated(math.pi * -0.5) * roadsParameters.streetLength)
+			queue:push(Road(SegmentStub(startNode, Node(newEnd), {}), globalGoalsStreet), t + 5)	
+		end
 	end
 
 end
@@ -471,11 +568,11 @@ function globalGoals(t, road)
 
 	if attr.highway then
 		if love.math.random() < roadsParameters.highwayBranchProbability and currentPop > 0.1 then
-			queue:push(Road(Segment(startNode, Node(Vector(startPosition + dir:rotated(math.pi * 0.5) * roadsParameters.highwayLength))), {highway = true}), t + roadsParameters.highwayPriority)
+			queue:push(Road(SegmentStub(startNode, Node(Vector(startPosition + dir:rotated(math.pi * 0.5) * roadsParameters.highwayLength))), {highway = true}), t + roadsParameters.highwayPriority)
 		end
 
 		if love.math.random() < roadsParameters.highwayBranchProbability and currentPop > 0.1 then
-			queue:push(Road(Segment(startNode, Node(Vector(startPosition + dir:rotated(math.pi * -0.5) * roadsParameters.highwayLength))), {highway = true}), t + roadsParameters.highwayPriority)
+			queue:push(Road(SegmentStub(startNode, Node(Vector(startPosition + dir:rotated(math.pi * -0.5) * roadsParameters.highwayLength))), {highway = true}), t + roadsParameters.highwayPriority)
 		end
 
 		-- look for next population
@@ -483,7 +580,7 @@ function globalGoals(t, road)
 			local bestAngle = math.max(-roadsParameters.highwayAngleRange, math.min(roadsParameters.highwayAngleRange, bestDirection(startPosition, dir, roadsParameters.highwayLookUpRayStepLength, math.pi * 0.1)))
 
 			-- push the best angle
-			queue:push(Road(Segment(startNode, Node(Vector(startPosition + dir:rotated(bestAngle) * roadsParameters.highwayLength))), {highway = true}), t + roadsParameters.highwayPriority)
+			queue:push(Road(SegmentStub(startNode, Node(Vector(startPosition + dir:rotated(bestAngle) * roadsParameters.highwayLength))), {highway = true}), t + roadsParameters.highwayPriority)
 		else
 			local bestAngle = bestDirection(startPosition, dir, 150, math.pi * 0.5)
 
@@ -493,25 +590,26 @@ function globalGoals(t, road)
 				bestAngle = bestAngle - math.pi * 0.5
 			end
 			-- push the best angle
-			queue:push(Road(Segment(startNode, Node(Vector(startPosition + dir:rotated(bestAngle) * roadsParameters.highwayLength))), {highway = true}), t + roadsParameters.highwayPriority)
+			queue:push(Road(SegmentStub(startNode, Node(Vector(startPosition + dir:rotated(bestAngle) * roadsParameters.highwayLength))), {highway = true}), t + roadsParameters.highwayPriority)
 		end
 	elseif currentPop > 0.0 then
 		-- keep forward
-		queue:push(Road(Segment(startNode, Node(Vector(startPosition + dir * roadsParameters.streetLength))), {}), t+roadsParameters.streetPriority)
+		queue:push(Road(SegmentStub(startNode, Node(Vector(startPosition + dir * roadsParameters.streetLength))), {}), t+roadsParameters.streetPriority)
 	end
 
 	-- street branching
 	if currentPop > 0.0 then
 		if math.random() < roadsParameters.streetBranchProbability then
-			queue:push(Road(Segment(startNode, Node(Vector(startPosition + dir:rotated(math.pi * -0.5) * roadsParameters.streetLength))), {}), t+roadsParameters.streetPriority + 2)
+			queue:push(Road(SegmentStub(startNode, Node(Vector(startPosition + dir:rotated(math.pi * -0.5) * roadsParameters.streetLength))), {}), t+roadsParameters.streetPriority + 2)
 		end
 
 		if math.random() < roadsParameters.streetBranchProbability then
-			queue:push(Road(Segment(startNode, Node(Vector(startPosition + dir:rotated(math.pi * 0.5) * roadsParameters.streetLength))), {}), t+roadsParameters.streetPriority + 2)
+			queue:push(Road(SegmentStub(startNode, Node(Vector(startPosition + dir:rotated(math.pi * 0.5) * roadsParameters.streetLength))), {}), t+roadsParameters.streetPriority + 2)
 		end
 	end
 end
 
+-- remove node on straight lines without intersection
 function optimizeGraph()
 	nodes = {}
 	quadTree:query(AABB(-mapSize * 2, -mapSize * 2, mapSize * 4, mapSize * 4), nodes)
@@ -523,6 +621,7 @@ function optimizeGraph()
 				local s0 = obj.segments[1]
 				local s1 = obj.segments[2]
 
+				-- remove node for straight roads
 				if math.abs(s0:dir():dot(s1:dir())) > 0.999999 then
 					local n0 = s0:startNode()
 					if n0 == obj then
@@ -538,22 +637,51 @@ function optimizeGraph()
 					quadTree:remove(s1)
 					quadTree:remove(obj)
 
-					s0.marked = true
-					s1.marked = true
-
 					s0:setStartNode(nil)
 					s0:setEndNode(nil)
 					s1:setStartNode(nil)
 					s1:setEndNode(nil)
 
 					assert(n0 ~= n1)
-					local s = Segment(n0, n1)
+					local s = Segment(n0, n1, s0.attr)
 					s.width = s0.width 
 					s.color = s0.color
 					s.debugColor = s0.debugColor
 					quadTree:push(s)
 				end
 			end
+		end
+	end
+end
+
+-- prune node with only 1 segment (dead end) for street
+-- recursive!
+function pruneNode(node)
+	if #node.segments == 1 and not node.segments[1].attr.highway then
+		-- remove segment and node 
+		local s = node.segments[1]
+		quadTree:remove(s)
+		quadTree:remove(node)
+
+		local otherNode = s:startNode()
+		if otherNode == node then
+			otherNode = s:endNode()
+		end
+
+		s:setStartNode(nil)
+		s:setEndNode(nil)
+
+		pruneNode(otherNode)
+	end
+end
+
+function pruneGraph()
+	nodes = {}
+	quadTree:query(AABB(-mapSize * 2, -mapSize * 2, mapSize * 4, mapSize * 4), nodes)
+
+	for i, obj in ipairs(nodes) do
+		if getmetatable(obj) == Node then
+			pruneNode(obj)
 		end
 	end
 end
@@ -588,8 +716,8 @@ function love.load()
 	local endNode1 = Node(startNode.position + Vector(-1, 0):rotated(startAngle) * roadsParameters.highwayLength)
 
 	-- push possible segments
-	queue:push(Road(Segment(startNode, endNode0), {highway = true}, globalGoalsHighway) , 0)
-	queue:push(Road(Segment(startNode, endNode1), {highway = true}, globalGoalsHighway) , 0)
+	queue:push(Road(SegmentStub(startNode, endNode0, {highway = true}), globalGoalsHighway) , 0)
+	queue:push(Road(SegmentStub(startNode, endNode1, {highway = true}), globalGoalsHighway) , 0)
 
 	while quadTree.length < 0 do
 		step()
@@ -604,13 +732,16 @@ function love.update(dt)
 
 	local finished = #queue == 0
 
-	for i = 1, 100 do
+	for i = 1, 10 do
 		step()
 	end
 
 	if not finished and #queue == 0 then
-		-- optimise the graph (ie removed nodes)
+		pruneGraph()
+
+		-- optimise the graph (ie remove nodes in straight roads)
 		optimizeGraph()
+
 	end
 
 end

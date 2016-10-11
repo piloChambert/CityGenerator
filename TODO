@@ -5,3 +5,4 @@
 - another layer of road? (Highway, main street, street)
 * A quadtree for storing segments can be a good idea...
 - Use a vornoi diagram for making different kind of region (residential, factory, etc)
+- remove nodes (and segments) that are only connected to one segment (recursive!)
