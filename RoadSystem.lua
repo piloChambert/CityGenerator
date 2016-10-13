@@ -10,13 +10,15 @@ roadsParameters = {
 	highwayPriority = 1,
 	highwayBranchProbability = 0.013,
 	highwayChangeDirectionProbability = 0.2,
+	highwayBranchStreetProbability = 0.5,
+	highwayBranchStreetMinPopulation = 0.1,
 
 	streetExtensionRatio = 0.2,
 
 	-- streets
 	streetLength = 80,
 	streetPriority = 200,
-	streetBranchProbability = 0.11
+	streetBranchProbability = 0.2
 }
 
 -- Node 
@@ -50,6 +52,10 @@ function Node:removeSegment(segment)
 	end
 
 	table.remove(self.segments, segIdx)
+end
+
+function Node:test()
+	-- does nothing
 end
 
 setmetatable(Node, { __call = function(_, ...) return Node.new(...) end })
@@ -149,6 +155,15 @@ function Segment:intersect(other)
 	end
 
 	return false, -1, -1
+end
+
+function Segment:test()
+	local len = self:dir():length()
+	if len ~= len then
+		print(self:startPoint(), self:endPoint())
+	end
+
+	assert(len == len)
 end
 
 setmetatable(Segment, { __call = function(_, ...) return Segment.new(...) end })
@@ -257,27 +272,6 @@ function RoadSystem:step()
 	end
 end
 
--- prune node with only 1 segment (dead end) for street
--- recursive!
-function RoadSystem:pruneNode(node)
-	if #node.segments == 1 and not node.segments[1].attr.highway then
-		-- remove segment and node 
-		local s = node.segments[1]
-		self.quadTree:remove(s)
-		self.quadTree:remove(node)
-
-		local otherNode = s:startNode()
-		if otherNode == node then
-			otherNode = s:endNode()
-		end
-
-		s:setStartNode(nil)
-		s:setEndNode(nil)
-
-		self:pruneNode(otherNode)
-	end
-end
-
 -- this compute the weighted population over a segment
 function RoadSystem:populationInDirection(position, direction, length)
 	local sum = 0
@@ -338,9 +332,9 @@ function RoadSystem:globalGoalsHighway(t, road)
 		self.queue:push(Road(SegmentStub(startNode, Node(newEnd), {highway = true}), RoadSystem.globalGoalsHighway), t)
 	end
 
-	-- branch?
+	-- branch highway
 	local branchRight = false
-	local branchLeft = true
+	local branchLeft = false
 	if math.random() < roadsParameters.highwayBranchProbability then
 		local r = math.random()
 		branchRight = r < 0.6666666
@@ -357,7 +351,8 @@ function RoadSystem:globalGoalsHighway(t, road)
 		end
 	end
 
-	if math.random() < roadsParameters.streetBranchProbability then
+	-- branch street
+	if currentPop >= roadsParameters.highwayBranchStreetMinPopulation and math.random() < roadsParameters.highwayBranchStreetProbability then
 		local r = math.random()
 		branchRight = r < 0.6666666 and not branchRight
 		branchLeft = r > 0.3333333 and not branchLeft
@@ -389,16 +384,16 @@ function RoadSystem:globalGoalsStreet(t, road)
 	if currentPop > 0.1 then
 		-- keep moving straight
 		local newEnd = Vector(startPosition + dir * roadsParameters.streetLength)
-		self.queue:push(Road(SegmentStub(startNode, Node(newEnd), {}), RoadSystem.globalGoalsStreet), t + 1)	
+		self.queue:push(Road(SegmentStub(startNode, Node(newEnd), {}), RoadSystem.globalGoalsStreet), t + 20)	
 
 		if math.random() < roadsParameters.streetBranchProbability then
 			local newEnd = Vector(startPosition + dir:rotated(math.pi * 0.5) * roadsParameters.streetLength)
-			self.queue:push(Road(SegmentStub(startNode, Node(newEnd), {}), RoadSystem.globalGoalsStreet), t + 5)	
+			self.queue:push(Road(SegmentStub(startNode, Node(newEnd), {}), RoadSystem.globalGoalsStreet), t + 10)	
 		end
 
 		if math.random() < roadsParameters.streetBranchProbability then
 			local newEnd = Vector(startPosition + dir:rotated(math.pi * -0.5) * roadsParameters.streetLength)
-			self.queue:push(Road(SegmentStub(startNode, Node(newEnd), {}), RoadSystem.globalGoalsStreet), t + 5)	
+			self.queue:push(Road(SegmentStub(startNode, Node(newEnd), {}), RoadSystem.globalGoalsStreet), t + 10)	
 		end
 	end
 end
@@ -415,7 +410,7 @@ function RoadSystem:localConstraints(road)
 		segment.color = {r = 255, g = 255, b = 255}
 		segment.debugColor = {r = 255, g = 255, b = 255}
 	else
-		segment.width = 8.0
+		segment.width = 6.0
 		segment.color = {r = 64, g = 64, b = 64}		
 		segment.debugColor = {r = 255, g = 255, b = 255}
 	end
@@ -429,6 +424,7 @@ function RoadSystem:localConstraints(road)
 	-- RULE 1
 	-- itersection with other segment
 	local closestIntersectionDistance = road.segment:length()
+	local closestIntersectionDistanceToOther = road.segment:length()
 	local closestSegment = nil
 
 	for  i, other in ipairs(listOfConcernSegments) do
@@ -439,6 +435,7 @@ function RoadSystem:localConstraints(road)
 			if intersect and u >= 0.0 and v >= 0.0 and u <= segment:length() and v <= other:length() then
 				if u < closestIntersectionDistance then
 					closestIntersectionDistance = u
+					closestIntersectionDistanceToOther = v
 					closestSegment = other
 				end
 			end
@@ -446,38 +443,70 @@ function RoadSystem:localConstraints(road)
 	end
 
 	if closestSegment ~= nil then
-		-- create an itersection here
-		-- split road
-		local I = segment:startPoint() + segment:dir() * closestIntersectionDistance
-		local newNode = Node(I)
-		local endNode = closestSegment:endNode()
+		-- to close to the start (shouldn't happen, but who knows?)
+		if closestIntersectionDistance < 1.0 then
+			-- give up!
+			return false
+		end
 
-		-- add new node
-		self.quadTree:push(newNode)
+		-- too close to the start, we will snap with it
+		if closestIntersectionDistanceToOther < 1.0 then
+			segment:setEndNode(closestSegment:startNode())
+			segment.debugColor = {r = 255, g = 255, b = 0}
 
-		-- update splitted segment
-		self.quadTree:remove(closestSegment) -- we have to do it!
-		closestSegment:setEndNode(newNode)
-		self.quadTree:push(closestSegment) -- the aabb have changed!
+			-- add it to the quadtree
+			self.quadTree:push(segment:toSegment())
 
-		-- add new segment
-		local newSegment = Segment(newNode, endNode, closestSegment.attr)
-		newSegment.color = closestSegment.color
-		newSegment.debugColor = {r = 0, g = 255, b = 0}
-		newSegment.width = closestSegment.width
-		self.quadTree:push(newSegment)
+			-- doesn't expand the road
+			segment.attr.done = true
 
-		-- correct this road segment
-		segment.debugColor = {r = 0, g = 0, b = 255}
+			return true
+		-- too close to the end, we will snap
+		elseif closestSegment:length() - closestIntersectionDistanceToOther < 1.0 then
+			segment:setEndNode(closestSegment:endNode())
+			segment.debugColor = {r = 255, g = 255, b = 0}
 
-		-- add the segment
-		segment:setEndNode(newNode)
-		self.quadTree:push(segment:toSegment())
+			-- add it to the quadtree
+			self.quadTree:push(segment:toSegment())
 
-		-- doesn't expand the road
-		segment.attr.done = true
+			-- doesn't expand the road
+			segment.attr.done = true
 
-		return true
+			return true
+		else
+			-- create an itersection here
+			-- split road
+			local I = segment:startPoint() + segment:dir() * closestIntersectionDistance
+			local newNode = Node(I)
+			local endNode = closestSegment:endNode()
+
+			-- add new node
+			self.quadTree:push(newNode)
+
+			-- update splitted segment
+			self.quadTree:remove(closestSegment) -- we have to do it!
+			closestSegment:setEndNode(newNode)
+			self.quadTree:push(closestSegment) -- the aabb have changed!
+
+			-- add new segment
+			local newSegment = Segment(newNode, endNode, closestSegment.attr)
+			newSegment.color = closestSegment.color
+			newSegment.debugColor = {r = 0, g = 255, b = 0}
+			newSegment.width = closestSegment.width
+			self.quadTree:push(newSegment)
+
+			-- correct this road segment
+			segment.debugColor = {r = 0, g = 0, b = 255}
+
+			-- add the segment
+			segment:setEndNode(newNode)
+			self.quadTree:push(segment:toSegment())
+
+			-- doesn't expand the road
+			segment.attr.done = true
+
+			return true
+		end
 	end
 
 	-- RULE 2 
@@ -578,6 +607,27 @@ function RoadSystem:localConstraints(road)
 	return true
 end
 
+-- prune node with only 1 segment (dead end) for street
+-- recursive!
+function RoadSystem:pruneNode(node)
+	if #node.segments == 1 and not node.segments[1].attr.highway then
+		-- remove segment and node 
+		local s = node.segments[1]
+		self.quadTree:remove(s)
+		self.quadTree:remove(node)
+
+		local otherNode = s:startNode()
+		if otherNode == node then
+			otherNode = s:endNode()
+		end
+
+		s:setStartNode(nil)
+		s:setEndNode(nil)
+
+		self:pruneNode(otherNode)
+	end
+end
+
 function RoadSystem:pruneGraph()
 	nodes = {}
 	self.quadTree:query(AABB(-self.mapSize * 2, -self.mapSize * 2, self.mapSize * 4, self.mapSize * 4), nodes)
@@ -655,6 +705,11 @@ function Line:startPoint()
 	return self._pos
 end
 
+function Line:endPoint()
+	return self._pos + self._dir * 20.0
+end
+
+
 setmetatable(Line, { __call = function(_, ...) return Line.new(...) end })
 
 
@@ -672,7 +727,19 @@ function RoadSystem:computeRoadPolygons()
 				local bd = b:dir() 
 				if b:endNode() == node then bd = -bd end
 
-				return math.atan(ad.x, ad.y) < math.atan(bd.x, bd.y)
+				if ad.y > 0 then
+					if bd.y < 0 then 
+						return true
+					end
+
+					return ad.x > bd.x
+				else
+					if bd.y > 0 then
+						return false
+					end
+
+					return ad.x < bd.x
+				end
 			end
 			table.sort(node.segments, sort)
 
@@ -692,22 +759,45 @@ function RoadSystem:computeRoadPolygons()
 				local l0 = Line(node.position + dir0:rotated(math.pi * 0.5) * s0.width, dir0)
 				local l1 = Line(node.position + dir1:rotated(math.pi * -0.5) * s1.width, dir1)
 
+				table.insert(node.lines, {l0, l1, Line(node.position, dir0), Line(node.position, dir1)})
+
 				local A = node.position + dir0 * 5
 				local B = node.position + dir1 * 5
 				local dl = Line(A, (B - A):normalized())
-				table.insert(node.lines, dl)
-				--table.insert(node.lines, l1)
 
 				local intersect, u, v = l0:intersect(l1)
 
-				if intersect then
-					local I = l0:startPoint() + l0:dir() * u
+				local v = nil
 
-					table.insert(node.vertices, I)
+				if intersect then
+					v = l0:startPoint() + l0:dir() * u
 				else
 					-- assume colinear
-					table.insert(node.vertices, l0:startPoint())					
+					v = l0:startPoint()
 				end
+
+				table.insert(node.vertices, v)
+
+				if s0.vertices == nil then
+					s0.vertices = {}
+				end
+
+				if s1.vertices == nil then
+					s1.vertices = {}
+				end
+
+				if s0:startNode() == node then
+					s0.vertices[2] = v
+				else
+					s0.vertices[0] = v
+				end
+
+				if s1:startNode() == node then
+					s1.vertices[3] = v
+				else
+					s1.vertices[1] = v
+				end
+
 			end
 		end
 	end

@@ -102,7 +102,6 @@ end
 
 function love.wheelmoved(x, y)
 	zoom = math.max(0.1, math.min(10, zoom + y))
-	print(y)
 end
 
 function drawQuadTree(node)
@@ -124,7 +123,6 @@ function drawQuadTree(node)
 			love.graphics.setLineWidth(1 / zoom)
 			love.graphics.line(obj:startPoint().x, obj:startPoint().y, obj:endPoint().x, obj:endPoint().y)
 		elseif getmetatable(obj) == Node then
-			--[[
 			if #obj.segments > 2 then
 				love.graphics.setColor(255, 0, 0, 255)
 				love.graphics.circle("fill", obj.position.x, obj.position.y, 10, 8)
@@ -132,25 +130,67 @@ function drawQuadTree(node)
 				love.graphics.setColor(255, 255, 255, 255)
 				love.graphics.circle("fill", obj.position.x, obj.position.y, 10, 8)
 			end
-			]]
+		end
+	end
+end
 
-			if obj.vertices then
-				love.graphics.setColor(255, 255, 255, 255)
+function drawRoadPolygons(node)
+	-- draw child first
+	if node.children ~= nil then
+		drawRoadPolygons(node.children[0])
+		drawRoadPolygons(node.children[1])
+		drawRoadPolygons(node.children[2])
+		drawRoadPolygons(node.children[3])
+	end
 
-				for i, v in ipairs(obj.vertices) do
-					love.graphics.circle("fill", v.x, v.y, 4 / zoom, 8)			
-				end
+	love.graphics.setLineWidth(1 / zoom)
 
-				for i, l in ipairs(obj.lines) do
-					local e = l:startPoint() + l:dir() * 20.0
-					love.graphics.setLineWidth(1 / zoom)
-					love.graphics.line(l:startPoint().x, l:startPoint().y, e.x, e.y)
+	for obj in node.list:iterate() do
+		if false then
+			if getmetatable(obj) == Node then
+				if obj.vertices then
+					love.graphics.setColor(255, 255, 255, 255)
+
+					for i, v in ipairs(obj.vertices) do
+						love.graphics.circle("fill", v.x, v.y, 4 / zoom, 8)			
+					end
+
+					local t = math.floor(love.timer.getTime()) % #obj.lines
+
+					for i, couple in ipairs(obj.lines) do
+						if i == t + 1 then
+							local l0 = couple[1]
+							local l1 = couple[2]
+							local l2 = couple[3]
+							local l3 = couple[4]
+											
+
+							love.graphics.setColor(255, 255, 0, 255)
+							love.graphics.line(l0:startPoint().x, l0:startPoint().y, l0:endPoint().x, l0:endPoint().y)
+
+							love.graphics.setColor(255, 0, 0, 255)
+							love.graphics.line(l1:startPoint().x, l1:startPoint().y, l1:endPoint().x, l1:endPoint().y)
+
+							love.graphics.setColor(0, 255, 0, 255)
+							love.graphics.line(l2:startPoint().x, l2:startPoint().y, l2:endPoint().x, l2:endPoint().y)
+							love.graphics.line(l3:startPoint().x, l3:startPoint().y, l3:endPoint().x, l3:endPoint().y)
+						end
+					end
 				end
 			end
 		end
 
+		if getmetatable(obj) == Segment then
+			if obj.vertices then
+				love.graphics.setColor(255, 255, 255, 255)
 
+				local v = obj.vertices
+				love.graphics.line(v[0].x, v[0].y, v[3].x, v[3].y)
+				love.graphics.line(v[1].x, v[1].y, v[2].x, v[2].y)
+			end
+		end
 	end
+
 end
 
 function love.draw()
@@ -176,8 +216,12 @@ function love.draw()
 	love.graphics.translate(cx, cy)
 	love.graphics.scale(zoom, zoom)
 
-	drawQuadTree(roadSystem.quadTree)
-		
+	if #roadSystem.queue > 0 then
+		drawQuadTree(roadSystem.quadTree)
+	end
+
+	drawRoadPolygons(roadSystem.quadTree)
+
 	love.graphics.pop()
 
 	love.graphics.setColor(255, 255, 255, 255)
